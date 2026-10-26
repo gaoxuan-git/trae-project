@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>台球</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #0f1013;
+    color: #e7e8ea;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  header {
+    position: absolute;
+    top: 28px;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    color: #9fa2a8;
+    text-transform: uppercase;
+  }
+
+  #game {
+    position: relative;
+    width: min(92vw, 1080px);
+    aspect-ratio: 2 / 1;
+    background: #1a1c20;
+    border-radius: 18px;
+    box-shadow:
+      0 32px 80px rgba(0, 0, 0, 0.55),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    overflow: hidden;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+  }
+
+  #hud {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    z-index: 2;
+  }
+
+  button {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e7e8ea;
+    padding: 8px 18px;
+    border-radius: 999px;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  button:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+
+  .power-bar {
+    width: 120px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+
+  .power-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #3ddc84, #ffcc00, #ff3b30);
+    transition: width 0.05s linear;
+  }
+
+  #status {
+    font-size: 12px;
+    color: #767a82;
+    min-width: 90px;
+    text-align: center;
+  }
+
+  .instructions {
+    position: absolute;
+    bottom: 28px;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    font-size: 12px;
+    color: #5c6068;
+    pointer-events: none;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<header><h1>Billiards</h1></header>
+
+<div id="game">
+  <canvas id="table"></canvas>
+  <div id="hud">
+    <span id="status">准备击球</span>
+    <div class="power-bar"><div class="power-fill" id="powerFill"></div></div>
+    <button id="resetBtn">重置球桌</button>
+  </div>
+</div>
+
+<div class="instructions">拖动鼠标瞄准并蓄力，松开击球</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('table');
+  const ctx = canvas.getContext('2d');
+  const resetBtn = document.getElementById('resetBtn');
+  const statusEl = document.getElementById('status');
+  const powerFill = document.getElementById('powerFill');
+
+  let width, height;
+  const TABLE_RATIO = 2;
+  const RAIL = 0.06;          // 边框占宽度的比例
+  const POCKET_R = 0.028;     // 袋口半径
+  const BALL_R = 0.018;       // 球半径
+  const FRICTION = 0.985;
+  const WALL_RESTITUTION = 0.75;
+  const BALL_RESTITUTION = 0.92;
+  const MAX_POWER = 22;
+  const STOP_SPEED = 0.035;
+
+  let balls = [];
+  let dragging = false;
+  let dragStart = null;
+  let mouse = { x: 0, y: 0 };
+  let gameReady = true;
+
+  function resize() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    width = rect.width;
+    height = rect.height;
+    canvas.width = width * window.devicePixelRatio;
+    canvas.height = height * window.devicePixelRatio;
+    ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+  }
+
+  class Ball {
+    constructor(id, x, y, color, stripe = false) {
+      this.id = id;
+      this.r = width * BALL_R;
+      this.x = x;
+      this.y = y;
+      this.vx = 0;
+      this.vy = 0;
+      this.color = color;
+      this.stripe = stripe;
+      this.pocketed = false;
+    }
+
+    reset(x, y) {
+      this.x = x;
+      this.y = y;
+      this.vx = 0;
+      this.vy = 0;
+      this.pocketed = false;
+    }
+  }
+
+  function tableBounds() {
+    const rail = width * RAIL;
+    return { left: rail, top: rail, right: width - rail, bottom: height - rail };
+  }
+
+  function pocketCenters() {
+    const b = tableBounds();
+    return [
+      { x: b.left, y: b.top },
+      { x: (b.left + b.right) / 2, y: b.top - width * 0.006 },
+      { x: b.right, y: b.top },
+      { x: b.left, y: b.bottom },
+      { x: (b.left + b.right) / 2, y: b.bottom + width * 0.006 },
+      { x: b.right, y: b.bottom }
+    ];
+  }
+
+  function initBalls() {
+    balls = [];
+    const b = tableBounds();
+
+    // 母球
+    balls.push(new Ball(0, b.left + (b.right - b.left) * 0.25, (b.top + b.bottom) / 2, '#f5f6f7'));
+
+    // 三角架摆球
+    const rackX = b.left + (b.right - b.left) * 0.72;
+    const rackY = (b.top + b.bottom) / 2;
+    const r = width * BALL_R;
+    const stepX = r * Math.sqrt(3);
+    const stepY = r * 2;
+
+    const colors = [
+      '#f6c324', '#1c4a9c', '#d32929', '#6a1c9c', '#f2921d',
+      '#1b7b3e', '#8c1f1f', '#111111', '#f6c324', '#1c4a9c',
+      '#d32929', '#6a1c9c', '#f2921d', '#1b7b3e', '#8c1f1f'
+    ];
+
+    let idx = 1;
+    for (let row = 0; row < 5; row++) {
+      for (let col = 0; col <= row; col++) {
+        const x = rackX + row * stepX;
+        const y = rackY - (row * stepY) / 2 + col * stepY;
+        // 8 号球放中间
+        const color = (row === 2 && col === 1) ? '#111111' : colors[idx - 1];
+        const stripe = color !== '#111111' && (idx % 3 === 0);
+        balls.push(new Ball(idx, x, y, color, stripe));
+        idx++;
+      }
+    }
+  }
+
+  function drawTable() {
+    const b = tableBounds();
+    const pockets = pocketCenters();
+
+    // 外框
+    ctx.fillStyle = '#3b2416';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, width, height, 16);
+    ctx.fill();
+
+    // 台呢
+    ctx.fillStyle = '#1b6b3d';
+    ctx.beginPath();
+    ctx.roundRect(b.left, b.top, b.right - b.left, b.bottom - b.top, 8);
+    ctx.fill();
+
+    // 袋口
+    ctx.fillStyle = '#0f1013';
+    pockets.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, width * POCKET_R, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // 中线和开球点
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo((b.left + b.right) / 2, b.top);
+    ctx.lineTo((b.left + b.right) / 2, b.bottom);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.arc(b.left + (b.right - b.left) * 0.25, (b.top + b.bottom) / 2, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBall(ball) {
+    if (ball.pocketed) return;
+    const { x, y, r, color } = ball;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    if (ball.stripe) {
+      ctx.fillStyle = '#f5f6f7';
+      ctx.beginPath();
+      ctx.rect(x - r * 0.65, y - r * 0.35, r * 1.3, r * 0.7);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+
+    // 编号圈
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.font = `bold ${Math.max(8, r * 0.5)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (ball.id > 0) ctx.fillText(ball.id, x, y + r * 0.06);
+
+    // 高光
+    const grad = ctx.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
+    grad.addColorStop(0, 'rgba(255,255,255,0.55)');
+    grad.addColorStop(0.35, 'rgba(255,255,255,0.05)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.25)');
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCue() {
+    if (!gameReady || dragging) {
+      const cue = balls[0];
+      if (cue.pocketed) return;
+      const angle = Math.atan2(mouse.y - cue.y, mouse.x - cue.x);
+      const len = width * 0.42;
+      const cx = cue.x - Math.cos(angle) * (cue.r + len * 0.05);
+      const cy = cue.y - Math.sin(angle) * (cue.r + len * 0.05);
+      const ex = cue.x - Math.cos(angle) * (cue.r + len);
+      const ey = cue.y - Math.sin(angle) * (cue.r + len);
+
+      ctx.save();
+      ctx.strokeStyle = dragging ? '#f5f6f7' : 'rgba(245,246,247,0.55)';
+      ctx.lineWidth = dragging ? 5 : 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+
+      // 准星
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cue.x, cue.y, cue.r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 蓄力线
+    if (dragging && dragStart) {
+      const cue = balls[0];
+      const angle = Math.atan2(dragStart.y - cue.y, dragStart.x - cue.x);
+      const dist = Math.min(Math.hypot(dragStart.x - cue.x, dragStart.y - cue.y), width * 0.28);
+      const power = Math.min(dist / (width * 0.28), 1);
+      powerFill.style.width = (power * 100).toFixed(0) + '%';
+
+      ctx.save();
+      ctx.strokeStyle = `rgba(255, ${255 - power * 200 | 0}, ${255 - power * 220 | 0}, 0.85)`;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(cue.x, cue.y);
+      ctx.lineTo(cue.x + Math.cos(angle) * dist, cue.y + Math.sin(angle) * dist);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      powerFill.style.width = '0%';
+    }
+  }
+
+  function resolveWallCollisions() {
+    const b = tableBounds();
+    const r = width * BALL_R;
+    balls.forEach(ball => {
+      if (ball.pocketed) return;
+      if (ball.x < b.left + r) { ball.x = b.left + r; ball.vx *= -WALL_RESTITUTION; }
+      if (ball.x > b.right - r) { ball.x = b.right - r; ball.vx *= -WALL_RESTITUTION; }
+      if (ball.y < b.top + r) { ball.y = b.top + r; ball.vy *= -WALL_RESTITUTION; }
+      if (ball.y > b.bottom - r) { ball.y = b.bottom - r; ball.vy *= -WALL_RESTITUTION; }
+    });
+  }
+
+  function resolveBallCollisions() {
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        if (a.pocketed || b.pocketed) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const minDist = a.r + b.r;
+        if (dist < minDist && dist > 0.001) {
+          const nx = dx / dist;
+          const ny = dy / dist;
+          const tx = -ny;
+          const ty = nx;
+
+          const vAn = a.vx * nx + a.vy * ny;
+          const vAt = a.vx * tx + a.vy * ty;
+          const vBn = b.vx * nx + b.vy * ny;
+          const vBt = b.vx * tx + b.vy * ty;
+
+          const mA = 1, mB = 1;
+          const vAnF = (vAn * (mA - mB) + 2 * mB * vBn) / (mA + mB);
+          const vBnF = (vBn * (mB - mA) + 2 * mA * vAn) / (mA + mB);
+
+          a.vx = vAnF * nx + vAt * tx;
+          a.vy = vAnF * ny + vAt * ty;
+          b.vx = vBnF * nx + vBt * tx;
+          b.vy = vBnF * ny + vBt * ty;
+
+          const overlap = minDist - dist;
+          a.x -= nx * overlap * 0.5;
+          a.y -= ny * overlap * 0.5;
+          b.x += nx * overlap * 0.5;
+          b.y += ny * overlap * 0.5;
+
+          a.vx *= BALL_RESTITUTION;
+          a.vy *= BALL_RESTITUTION;
+          b.vx *= BALL_RESTITUTION;
+          b.vy *= BALL_RESTITUTION;
+        }
+      }
+    }
+  }
+
+  function checkPockets() {
+    const pockets = pocketCenters();
+    balls.forEach(ball => {
+      if (ball.pocketed) return;
+      for (const p of pockets) {
+        if (Math.hypot(ball.x - p.x, ball.y - p.y) < width * POCKET_R * 0.85) {
+          ball.pocketed = true;
+          ball.vx = 0;
+          ball.vy = 0;
+          ball.x = -1000;
+          break;
+        }
+      }
+    });
+  }
+
+  function allStopped() {
+    return balls.every(b => b.pocketed || Math.hypot(b.vx, b.vy) < STOP_SPEED);
+  }
+
+  function update() {
+    balls.forEach(ball => {
+      if (ball.pocketed) return;
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      if (Math.hypot(ball.vx, ball.vy) < STOP_SPEED) {
+        ball.vx = 0;
+        ball.vy = 0;
+      }
+    });
+
+    resolveWallCollisions();
+    resolveBallCollisions();
+    checkPockets();
+
+    if (!gameReady && allStopped()) {
+      gameReady = true;
+      statusEl.textContent = '准备击球';
+    }
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, width, height);
+    drawTable();
+    balls.forEach(drawBall);
+    drawCue();
+  }
+
+  function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  canvas.addEventListener('mousemove', e => { mouse = getPos(e); });
+  canvas.addEventListener('touchmove', e => { mouse = getPos(e); }, { passive: true });
+
+  canvas.addEventListener('mousedown', e => {
+    if (!gameReady) return;
+    const cue = balls[0];
+    if (cue.pocketed) return;
+    const p = getPos(e);
+    dragging = true;
+    dragStart = p;
+    statusEl.textContent = '蓄力中…';
+  });
+
+  canvas.addEventListener('touchstart', e => {
+    if (!gameReady) return;
+    const cue = balls[0];
+    if (cue.pocketed) return;
+    const p = getPos(e);
+    mouse = p;
+    dragging = true;
+    dragStart = p;
+    statusEl.textContent = '蓄力中…';
+  }, { passive: true });
+
+  function shoot() {
+    if (!dragging) return;
+    dragging = false;
+    const cue = balls[0];
+    if (cue.pocketed) return;
+
+    const angle = Math.atan2(dragStart.y - cue.y, dragStart.x - cue.x);
+    const dist = Math.min(Math.hypot(dragStart.x - cue.x, dragStart.y - cue.y), width * 0.28);
+    const power = dist / (width * 0.28);
+    if (power < 0.03) {
+      statusEl.textContent = '力量太小';
+      return;
+    }
+
+    cue.vx = Math.cos(angle) * power * MAX_POWER;
+    cue.vy = Math.sin(angle) * power * MAX_POWER;
+    gameReady = false;
+    statusEl.textContent = '球运动中…';
+  }
+
+  window.addEventListener('mouseup', shoot);
+  window.addEventListener('touchend', shoot);
+
+  resetBtn.addEventListener('click', () => {
+    initBalls();
+    gameReady = true;
+    dragging = false;
+    statusEl.textContent = '准备击球';
+  });
+
+  window.addEventListener('resize', () => {
+    resize();
+    initBalls();
+  });
+
+  resize();
+  initBalls();
+  loop();
+})();
+</script>
+</body>
+</html>

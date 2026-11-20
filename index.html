@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>待办清单</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #2d3748;
+    }
+
+    .app {
+      width: 100%;
+      max-width: 460px;
+      background: #fff;
+      border-radius: 18px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+      overflow: hidden;
+    }
+
+    .header {
+      padding: 26px 26px 18px;
+      background: linear-gradient(135deg, #5b6ef5, #8b5cf6);
+      color: #fff;
+    }
+
+    .header h1 { font-size: 22px; font-weight: 600; }
+    .header p { margin-top: 6px; font-size: 13px; opacity: 0.85; }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      padding: 18px 26px;
+      border-bottom: 1px solid #edf0f5;
+    }
+
+    .input-row input {
+      flex: 1;
+      padding: 12px 14px;
+      font-size: 15px;
+      border: 2px solid #e2e8f0;
+      border-radius: 10px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input-row input:focus { border-color: #7c8cf8; }
+
+    .input-row button {
+      padding: 0 20px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #5b6ef5, #8b5cf6);
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+
+    .input-row button:hover { opacity: 0.9; }
+    .input-row button:active { transform: scale(0.96); }
+
+    .filters {
+      display: flex;
+      gap: 8px;
+      padding: 14px 26px 6px;
+    }
+
+    .filters button {
+      padding: 6px 14px;
+      font-size: 13px;
+      color: #718096;
+      border: none;
+      border-radius: 20px;
+      background: #f1f4f9;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .filters button.active {
+      color: #fff;
+      background: #5b6ef5;
+    }
+
+    ul { list-style: none; padding: 8px 14px 14px; }
+
+    li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 10px;
+      transition: background 0.2s;
+      animation: slideIn 0.25s ease;
+    }
+
+    li:hover { background: #f7f9fc; }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    li input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      accent-color: #5b6ef5;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    li .text {
+      flex: 1;
+      font-size: 15px;
+      word-break: break-all;
+      cursor: pointer;
+    }
+
+    li.done .text {
+      color: #a0aec0;
+      text-decoration: line-through;
+    }
+
+    li .del {
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 8px;
+      color: #cbd5e0;
+      font-size: 18px;
+      line-height: 1;
+      background: transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    li .del:hover { color: #e53e3e; background: #fff5f5; }
+
+    .empty {
+      padding: 36px 0;
+      text-align: center;
+      color: #a0aec0;
+      font-size: 14px;
+    }
+
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 26px;
+      border-top: 1px solid #edf0f5;
+      font-size: 13px;
+      color: #718096;
+    }
+
+    .footer button {
+      border: none;
+      background: transparent;
+      color: #e53e3e;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .footer button:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <h1>待办清单</h1>
+      <p id="subtitle">今天也要加油哦</p>
+    </div>
+
+    <div class="input-row">
+      <input id="taskInput" type="text" placeholder="输入待办事项，回车添加…" maxlength="120">
+      <button id="addBtn">添加</button>
+    </div>
+
+    <div class="filters">
+      <button data-filter="all" class="active">全部</button>
+      <button data-filter="active">未完成</button>
+      <button data-filter="done">已完成</button>
+    </div>
+
+    <ul id="list"></ul>
+
+    <div class="footer">
+      <span id="counter">共 0 项</span>
+      <button id="clearDone">清除已完成</button>
+    </div>
+  </div>
+
+  <script>
+    var STORAGE_KEY = 'todo_demo_items';
+    var todos = load();
+    var filter = 'all';
+
+    var listEl = document.getElementById('list');
+    var inputEl = document.getElementById('taskInput');
+    var counterEl = document.getElementById('counter');
+    var subtitleEl = document.getElementById('subtitle');
+
+    function load() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function save() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(todos));
+    }
+
+    function visible() {
+      if (filter === 'active') return todos.filter(function (t) { return !t.done; });
+      if (filter === 'done') return todos.filter(function (t) { return t.done; });
+      return todos;
+    }
+
+    function render() {
+      var items = visible();
+      listEl.innerHTML = '';
+
+      if (items.length === 0) {
+        var empty = document.createElement('li');
+        empty.className = 'empty';
+        empty.textContent = todos.length === 0 ? '还没有待办，先添加一条吧' : '这里空空如也';
+        listEl.appendChild(empty);
+      } else {
+        items.forEach(function (item) {
+          listEl.appendChild(createItem(item));
+        });
+      }
+
+      var doneCount = todos.filter(function (t) { return t.done; }).length;
+      counterEl.textContent = '共 ' + todos.length + ' 项 · 已完成 ' + doneCount;
+      subtitleEl.textContent = todos.length === 0
+        ? '今天也要加油哦'
+        : (doneCount === todos.length ? '全部完成，太棒了！' : '还有 ' + (todos.length - doneCount) + ' 项待完成');
+    }
+
+    function createItem(item) {
+      var li = document.createElement('li');
+      if (item.done) li.className = 'done';
+
+      var checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = item.done;
+      checkbox.addEventListener('change', function () {
+        item.done = checkbox.checked;
+        save();
+        render();
+      });
+
+      var text = document.createElement('span');
+      text.className = 'text';
+      text.textContent = item.text;
+      text.title = '点击切换完成状态';
+      text.addEventListener('click', function () {
+        item.done = !item.done;
+        save();
+        render();
+      });
+
+      var del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = '×';
+      del.title = '删除';
+      del.addEventListener('click', function () {
+        todos = todos.filter(function (t) { return t.id !== item.id; });
+        save();
+        render();
+      });
+
+      li.appendChild(checkbox);
+      li.appendChild(text);
+      li.appendChild(del);
+      return li;
+    }
+
+    function addTodo() {
+      var value = inputEl.value.trim();
+      if (!value) return;
+      todos.unshift({ id: Date.now() + Math.random(), text: value, done: false });
+      inputEl.value = '';
+      save();
+      render();
+    }
+
+    document.getElementById('addBtn').addEventListener('click', addTodo);
+    inputEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') addTodo();
+    });
+
+    document.querySelectorAll('.filters button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        filter = btn.dataset.filter;
+        document.querySelectorAll('.filters button').forEach(function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+        render();
+      });
+    });
+
+    document.getElementById('clearDone').addEventListener('click', function () {
+      todos = todos.filter(function (t) { return !t.done; });
+      save();
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
